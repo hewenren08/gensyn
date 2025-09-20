@@ -8,20 +8,6 @@ ROOT=$PWD
 # GenRL Swarm version to use
 GENRL_TAG="0.1.6"
 
-# 定时重启设置（单位：秒）
-# 默认为24小时（86400秒）
-# 设置为0可禁用定时重启功能
-AUTO_RESTART_INTERVAL=${AUTO_RESTART_INTERVAL:-0}
-
-# 无输出超时设置（单位：秒）
-# 默认为30分钟（1800秒）
-# 设置为0可禁用无输出检测功能
-NO_OUTPUT_TIMEOUT=${NO_OUTPUT_TIMEOUT:-1800}
-
-# 如果你想完全禁用无输出检测，可以设置：
-# export NO_OUTPUT_TIMEOUT=0
-# 然后运行脚本
-
 unset IDENTITY_PATH
 export IDENTITY_PATH
 export GENSYN_RESET_CONFIG
@@ -376,58 +362,11 @@ start_training() {
     tail -f "$training_log" &
     local tail_pid=$!
     
-    # 启动进程监控器
-    local monitor_active=true
-    local last_output_time=$(date +%s)
-    local last_log_size=0
-    local no_output_timeout=${NO_OUTPUT_TIMEOUT:-1800}  # 30分钟无输出则认为进程可能死亡（可通过环境变量调整）
-    local check_interval=60       # 每分钟检查一次
-    
-    # 后台监控进程存活状态和输出活跃度
-    {
-        while $monitor_active; do
-            sleep $check_interval
-            
-            # 检查进程是否还在运行
-            if ! kill -0 $training_pid 2>/dev/null; then
-                echo_red ">> Training process (PID: $training_pid) has died unexpectedly"
-                break
-            fi
-            
-            # 检查日志文件是否有新输出
-            if [ -f "$training_log" ]; then
-                local current_log_size=$(wc -c < "$training_log" 2>/dev/null || echo 0)
-                local current_time=$(date +%s)
-                
-                if [ "$current_log_size" -gt "$last_log_size" ]; then
-                    # 有新输出，更新时间戳
-                    last_output_time=$current_time
-                    last_log_size=$current_log_size
-                else
-                    # 检查是否超时无输出
-                    local no_output_duration=$((current_time - last_output_time))
-                    # 只有当NO_OUTPUT_TIMEOUT大于0时才检查超时
-                    if [ "$no_output_timeout" -gt 0 ] && [ $no_output_duration -ge $no_output_timeout ]; then
-                        echo_red ">> Training process appears to be stuck (no output for ${no_output_duration}s)"
-                        echo_red ">> Terminating stuck process..."
-                        kill -TERM $training_pid 2>/dev/null || true
-                        sleep 5
-                        kill -KILL $training_pid 2>/dev/null || true
-                        break
-                    fi
-                fi
-            fi
-        done
-    } &
-    local monitor_pid=$!
-    
     # 等待训练进程完成
     wait $training_pid
     local exit_code=$?
     
-    # 停止监控器和日志显示
-    monitor_active=false
-    kill $monitor_pid 2>/dev/null || true
+    # 停止日志显示
     kill $tail_pid 2>/dev/null || true
     
     echo_blue ">> Training process completed with exit code: $exit_code"
@@ -453,68 +392,23 @@ start_training() {
             echo_red ">> Error details saved to: $training_log"
             return 1  # 强制返回错误码
         fi
-        
-        # 检查进程是否因为无输出而被终止
-        if [ $exit_code -eq 143 ] || [ $exit_code -eq 137 ]; then
-            echo_red ">> Process was terminated due to timeout or system kill"
-            return 1  # 强制返回错误码以触发重试
-        fi
     fi
     
     return $exit_code
 }
 
-# 带重试逻辑和定时重启的训练函数
+# 带重试逻辑的训练函数
 run_training_with_retry() {
     local MAX_RETRIES=60
     local RETRY_DELAY=30
-    local RESTART_INTERVAL=$AUTO_RESTART_INTERVAL
-    
-    # 记录启动时间
-    local start_time=$(date +%s)
-    local current_time
-    local elapsed_time
-    local timer_pid=""
     
     for attempt in $(seq 1 $MAX_RETRIES); do
         echo_green ">> Training attempt $attempt/$MAX_RETRIES"
-        
-        # 只有当RESTART_INTERVAL大于0时才启动定时器
-        if [ "$RESTART_INTERVAL" -gt 0 ]; then
-            echo_blue ">> 已启用定时重启功能，间隔时间: $(($RESTART_INTERVAL/3600))小时"
-            # 启动后台进程监控运行时间
-            {
-                local monitor_pid=$$
-                while true; do
-                    sleep 300  # 每5分钟检查一次
-                    current_time=$(date +%s)
-                    elapsed_time=$((current_time - start_time))
-                    
-                    if [ $elapsed_time -ge $RESTART_INTERVAL ]; then
-                        echo_blue ">> 已运行$(($RESTART_INTERVAL/3600))小时，执行计划重启..."
-                        # 向主进程发送SIGUSR1信号
-                        kill -SIGUSR1 $monitor_pid 2>/dev/null || true
-                        break
-                    fi
-                done
-            } &
-            timer_pid=$!
-            
-            # 设置信号处理器，捕获SIGUSR1信号（定时重启）
-            trap 'echo_blue ">> 接收到计划重启信号"; exit 143;' SIGUSR1
-        else
-            echo_blue ">> 定时重启功能已禁用"
-        fi
         
         set +e  # 手动捕获退出码，避免 -e 导致提前退出
         start_training
         exit_code=$?
         set -e
-        
-        # 如果定时器进程存在，则停止它
-        if [ -n "$timer_pid" ]; then
-            kill $timer_pid 2>/dev/null || true
-        fi
         
         if [ $exit_code -eq 0 ]; then
             echo_green ">> Training completed successfully!"
@@ -524,19 +418,8 @@ run_training_with_retry() {
             echo_red ">> Training attempt $attempt was killed by system (SIGKILL)"
             echo_red ">> This usually indicates memory issues or system resource constraints"
         elif [ $exit_code -eq 143 ]; then
-            # 检查是否是定时重启导致的
-            current_time=$(date +%s)
-            elapsed_time=$((current_time - start_time))
-            if [ "$RESTART_INTERVAL" -gt 0 ] && [ $elapsed_time -ge $RESTART_INTERVAL ]; then
-                echo_blue ">> 执行$(($RESTART_INTERVAL/3600))小时定时重启"
-                # 重置启动时间
-                start_time=$(date +%s)
-                # 重置trap
-                trap - SIGUSR1
-            else
-                echo_red ">> Training attempt $attempt was terminated (SIGTERM or timeout)"
-                echo_red ">> This may indicate the process was stuck or killed due to inactivity"
-            fi
+            echo_red ">> Training attempt $attempt was terminated (SIGTERM or timeout)"
+            echo_red ">> This may indicate the process was stuck or killed due to inactivity"
          elif [ $exit_code -eq 1 ]; then
             # DHT连接失败或其他运行时错误
             echo_red ">> Training attempt $attempt failed with DHT/runtime error (exit code 1)"
