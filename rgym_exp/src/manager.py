@@ -222,7 +222,6 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
 
             self.submitted_this_round = True
             
-            self._call_health_check()
             return True
 
         except Exception as e:
@@ -306,19 +305,3 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
                 return
 
         get_logger().info("Training timed out!")
-    
-    def _call_health_check(self):
-        """异步调用本地健康检查接口，不阻塞主流程"""
-        def _request():
-            try:
-                # 使用POST方法调用健康检查API
-                resp = requests.post("http://localhost:3000/api/health-check", timeout=15)
-                if resp.status_code == 200:
-                    get_logger().info("Health check successful")
-                else:
-                    get_logger().warning(f"Health check returned status {resp.status_code}")
-            except Exception as e:
-                get_logger().warning(f"Health check failed: {e}")
-
-        # 异步线程执行
-        threading.Thread(target=_request, daemon=True).start()
