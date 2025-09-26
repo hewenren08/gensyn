@@ -18,6 +18,7 @@ export SWARM_CONTRACT="0xFaD7C5e93f28257429569B854151A1B8DCD404c2"
 export PRG_CONTRACT="0x51D4db531ae706a6eC732458825465058fA23a35"
 export HUGGINGFACE_ACCESS_TOKEN="None"
 export PRG_GAME=true
+export HF_ENDPOINT=https://hf-mirror.com
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # M4芯片专用内存优化设置
