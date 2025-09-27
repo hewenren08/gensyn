@@ -5,6 +5,7 @@
 .env
 .next/
 temp-data/
+modal-login/temp-data/
 swarm.pem
 logs/
 runs/
