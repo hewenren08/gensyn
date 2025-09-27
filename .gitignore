@@ -2,6 +2,9 @@
 **/__pycache__/
 .DS_Store
 
+.env
+.next/
+temp-data/
 swarm.pem
 logs/
 runs/
@@ -15,6 +18,7 @@ web/ui/dist/
 /bazel-*
 /external
 /tmp
+.tmp
 
 dist/
 MODULE.bazel.lock
