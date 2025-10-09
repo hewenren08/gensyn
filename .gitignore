@@ -29,6 +29,7 @@ MODULE.bazel.lock
 user/
 
 configs/
+rgym_exp/config
 genrl-swarm/
 
 result
