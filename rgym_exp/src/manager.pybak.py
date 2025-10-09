@@ -2,7 +2,6 @@ import os
 import time
 import logging
 from collections import defaultdict
-
 from genrl.blockchain import SwarmCoordinator
 from genrl.communication import Communication
 from genrl.communication.hivemind.hivemind_backend import HivemindBackend
@@ -16,9 +15,10 @@ from genrl.roles import RoleManager
 from genrl.state import GameState
 from genrl.trainer import TrainerModule
 from huggingface_hub import login, whoami
-
 from rgym_exp.src.utils.name_utils import get_name_from_peer_id
 from rgym_exp.src.prg_module import PRGModule
+import threading
+import requests
 
 
 class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
@@ -39,10 +39,9 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         log_dir: str = "logs",
         hf_token: str | None = None,
         hf_push_frequency: int = 20,
-        submit_frequency: int = 3,  # Although not used in the new logic, keep it for compatibility
+        submit_frequency: int = 3,
         **kwargs,
     ):
-
         super().__init__(
             max_stage=max_stage,
             max_round=max_round,
@@ -63,7 +62,6 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         self.state.peer_id = self.peer_id
         self.animal_name = get_name_from_peer_id(self.peer_id, True)
 
-        # Customized logging
         format_msg = f"[{self.animal_name}] %(asctime)s %(levelname)s: %(message)s"
         logging.basicConfig(level=logging.INFO, format=format_msg)
         formatter = logging.Formatter(format_msg)
@@ -79,15 +77,30 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         self.coordinator.register_peer(self.peer_id)
         round, _ = self.coordinator.get_round_and_stage()
         self.state.round = round
+        self.communication.step_ = self.state.round  # initialize communication module to contract's round
 
-        self.communication.step_ = (
-            self.state.round
-        )  # initialize communication module to contract's round
+        self.submit_frequency = submit_frequency
+        self.batched_signals = 0.0
+        self.submitted_this_round = False
+        self.cached_zero_reward_rounds = []  # zero reward cache
+
+        # PRG Game
+        self.prg_module = PRGModule(log_dir, **kwargs)
+        self.prg_game = self.prg_module.prg_game
 
         # enable push to HF if token was provided
         self.hf_token = hf_token
         if self.hf_token not in [None, "None"]:
-            self._configure_hf_hub(hf_push_frequency)
+            username = whoami(token=self.hf_token)["name"]
+            model_name = self.trainer.model.config.name_or_path.split("/")[-1]
+            model_name += "-Gensyn-Swarm"
+            model_name += f"-{self.animal_name}"
+            self.trainer.args.hub_model_id = f"{username}/{model_name}"
+            self.trainer.args.push_to_hub = True
+            self.trainer.args.hub_token = self.hf_token
+            self.hf_push_frequency = hf_push_frequency
+            get_logger().info("Logging into Hugging Face Hub...")
+            login(self.hf_token)
 
         get_logger().info(
             f"🐱 Hello 🐈 [{get_name_from_peer_id(self.peer_id)}] 🦮 [{self.peer_id}]!"
@@ -97,16 +110,6 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
 
         with open(os.path.join(log_dir, f"system_info.txt"), "w") as f:
             f.write(get_system_info())
-
-        self.batched_signals = 0.0
-        self.time_since_submit = time.time()  # seconds
-        self.submit_period = 3.0  # hours
-        self.submitted_this_round = False
-        self.cached_zero_reward_rounds = []  # zero reward cache
-
-        # PRG Game
-        self.prg_module = PRGModule(log_dir, **kwargs)
-        self.prg_game = self.prg_module.prg_game
 
     def _get_total_rewards_by_agent(self):
         rewards_by_agent = defaultdict(int)
@@ -118,40 +121,70 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
                     for generation_rewards in batch_rewards:
                         tot += sum(generation_rewards)
                     rewards_by_agent[agent_id] += tot
-
         return rewards_by_agent
 
-    def _get_my_rewards(self, signal_by_agent):
-        if len(signal_by_agent) == 0:
-            return 0
-        if self.peer_id in signal_by_agent:
-            my_signal = signal_by_agent[self.peer_id]
-        else:
-            my_signal = 0
-        my_signal = (my_signal + 1) * (my_signal > 0) + my_signal * (my_signal <= 0)
-        return my_signal
-
+    # ----------------- 保留原有接口 -----------------
     def _try_submit_to_chain(self, signal_by_agent):
-        """Try to submit rewards to the chain based on a time period."""
-        elapsed_time_hours = (time.time() - self.time_since_submit) / 3600
-        if elapsed_time_hours < self.submit_period:
-            return False
+        """原始方法保留，可以按小时提交使用"""
+        elapsed_time_hours = (time.time() - getattr(self, "time_since_submit", 0)) / 3600
+        if elapsed_time_hours > self.submit_frequency:
+            try:
+                self.coordinator.submit_reward(
+                    self.state.round, 0, int(self.batched_signals), self.peer_id
+                )
+                self.batched_signals = 0.0
+                if len(signal_by_agent) > 0:
+                    max_agent, max_signal = max(
+                        signal_by_agent.items(), key=lambda x: x[1]
+                    )
+                else:
+                    max_agent = self.peer_id
 
-        try:
-            if not signal_by_agent:
-                max_agent = self.peer_id
-                max_rewards = 0
+                self.coordinator.submit_winners(
+                    self.state.round, [max_agent], self.peer_id
+                )
+                self.time_since_submit = time.time()
+                self.submitted_this_round = True
+            except Exception as e:
+                get_logger().debug(str(e))
+
+    # ----------------- 新逻辑接口 -----------------
+    def _hook_after_rewards_updated(self):
+        """奖励更新后自动提交，整合 zero reward 缓存"""
+        rewards_by_agent = self._get_total_rewards_by_agent()
+        if not rewards_by_agent:
+            get_logger().warning(f"No rewards data for round {self.state.round}")
+            return
+
+        my_rewards = rewards_by_agent.get(self.peer_id, 0)
+        my_rewards = (my_rewards + 1) * (my_rewards > 0) + my_rewards * (my_rewards <= 0)
+
+        submission_success = self._submit_current_rewards(my_rewards, rewards_by_agent)
+
+        if submission_success:
+            # zero reward 缓存逻辑
+            if my_rewards <= 0:
+                if self.state.round not in self.cached_zero_reward_rounds:
+                    self.cached_zero_reward_rounds.append(self.state.round)
+                if len(self.cached_zero_reward_rounds) > 3:
+                    removed = self.cached_zero_reward_rounds.pop(0)
+                    get_logger().info(f"Zero reward cache exceeded 3, removed round {removed}")
             else:
-                max_agent, max_rewards = max(signal_by_agent.items(), key=lambda x: x[1])
+                # 清空缓存
+                self.cached_zero_reward_rounds = []
 
+    def _submit_current_rewards(self, my_rewards, rewards_by_agent):
+        """提交奖励和胜者，包含缓存 zero reward"""
+        try:
+            max_agent, max_rewards = max(rewards_by_agent.items(), key=lambda x: x[1])
             total_cached_zero = len(self.cached_zero_reward_rounds)
-            final_rewards = self.batched_signals + total_cached_zero
+            final_rewards = my_rewards + total_cached_zero
 
             get_logger().info(
-                f"Submitting rewards: {final_rewards} (batched: {self.batched_signals} + cached zero: {total_cached_zero}) for round {self.state.round}"
+                f"Submitting rewards: {final_rewards} (current: {my_rewards} + cached zero: {total_cached_zero}) for round {self.state.round}"
             )
 
-            # Submit reward (retry 3 times)
+            # 提交奖励（重试3次）
             for attempt in range(3):
                 try:
                     self.coordinator.submit_reward(
@@ -167,7 +200,7 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
                         get_logger().error(f"Failed to submit reward after 3 attempts: {e}")
                         return False
 
-            # Submit winner (retry 3 times)
+            # 提交胜者（重试3次）
             for attempt in range(3):
                 try:
                     self.coordinator.submit_winners(
@@ -182,71 +215,32 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
                     if attempt == 2:
                         get_logger().error(f"Failed to submit winners after 3 attempts: {e}")
                         return False
-            
-            # Reset state after successful submission
-            self.batched_signals = 0.0
-            self.cached_zero_reward_rounds = []
-            self.time_since_submit = time.time()
+
+            # 清理 zero reward 缓存
+            if my_rewards > 0 or total_cached_zero > 0:
+                self.cached_zero_reward_rounds = []
+
             self.submitted_this_round = True
+            
             return True
 
         except Exception as e:
-            get_logger().error(f"Error in _try_submit_to_chain: {e}")
+            get_logger().error(f"Error in _submit_current_rewards: {e}")
             return False
 
-    def _hook_after_rewards_updated(self):
-        """Accumulate rewards and try to submit based on time."""
-        rewards_by_agent = self._get_total_rewards_by_agent()
-        my_rewards = self._get_my_rewards(rewards_by_agent)
-
-        self.batched_signals += my_rewards
-
-        # Zero reward cache logic
-        if my_rewards <= 0:
-            if self.state.round not in self.cached_zero_reward_rounds:
-                self.cached_zero_reward_rounds.append(self.state.round)
-            if len(self.cached_zero_reward_rounds) > 3:
-                removed = self.cached_zero_reward_rounds.pop(0)
-                get_logger().info(f"Zero reward cache exceeded 3, removed round {removed}")
-        else:
-            # Clear cache on positive reward, as it will be submitted with batched signals
-            pass
-
-        self._try_submit_to_chain(rewards_by_agent)
-
     def _hook_after_round_advanced(self):
+        """轮次推进后，保存 HF 并阻塞等待下一轮"""
         if self.prg_game:
-            # TODO: Ideally I think the judge client request question bit should come in the manager and the trainer should be doing only PyTorch-y stuff,
-            # but I have kept it consistent with the evaluate function for now.
             prg_history_dict = self.prg_module.prg_history_dict
             results_dict = self.trainer.play_prg_game_logits(prg_history_dict)
             self.prg_module.play_prg_game(results_dict, self.peer_id)
 
         self._save_to_hf()
-
-        # At the end of a round, try one last time to submit any pending rewards
-        if not self.submitted_this_round:
-            signal_by_agent = self._get_total_rewards_by_agent()
-            self._try_submit_to_chain(signal_by_agent)
-
-        # Reset flag for next round
-        self.submitted_this_round = False
-
-        # Block until swarm round advances
         self.agent_block()
+        self.submitted_this_round = False
 
     def _hook_after_game(self):
         self._save_to_hf()
-
-    def _configure_hf_hub(self, hf_push_frequency):
-        username = whoami(token=self.hf_token)["name"]
-        model_name = self.trainer.model.config.name_or_path.split("/")[-1]
-        model_name += "-Gensyn-Swarm"
-        model_name += f"-{self.animal_name}"
-        self.trainer.args.hub_model_id = f"{username}/{model_name}"
-        self.hf_push_frequency = hf_push_frequency
-        get_logger().info("Logging into Hugging Face Hub...")
-        login(self.hf_token)
 
     def _save_to_hf(self):
         if (
@@ -256,7 +250,6 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
             get_logger().info(f"pushing model to huggingface")
             try:
                 repo_id = self.trainer.args.hub_model_id
-
                 self.trainer.model.push_to_hub(
                     repo_id=repo_id,
                     token=self.hf_token,
@@ -271,23 +264,20 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
                 )
             except Exception:
                 get_logger().exception(
-                    "Failed to push model to the Hugging Face Hub. When you conclude training please try manually pushing it yourself using the instructions here: https://huggingface.co/docs/hub/en/models-uploading",
+                    "Failed to push model to the Hugging Face Hub.",
                     stack_info=True,
                 )
 
     def agent_block(
-        self, check_interval=5.0, log_timeout=10.0, max_check_interval=60.0 * 15
+        self, check_interval=5.0, log_timeout=10.0, max_check_interval=60.0 * 5
     ):
         start_time = time.monotonic()
         fetch_log_time = start_time
-        check_backoff = (
-            check_interval  # Exponential backoff for already finished rounds.
-        )
+        check_backoff = check_interval
         while time.monotonic() - start_time < self.train_timeout:
             curr_time = time.monotonic()
             _ = self.communication.dht.get_visible_maddrs(latest=True)
 
-            # Retrieve current round and stage.
             try:
                 round_num, stage = self.coordinator.get_round_and_stage()
             except Exception as e:
@@ -296,14 +286,13 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
                         f"Could not fetch round and stage: {e}. Next check in {check_interval}s."
                     )
                     fetch_log_time = curr_time
-
                 time.sleep(check_interval)
                 continue
 
             if round_num >= self.state.round:
                 get_logger().info(f"🐝 Joining round: {round_num}")
-                check_backoff = check_interval  # Reset backoff after successful round
-                self.state.round = round_num  # advance to swarm's round.
+                check_backoff = check_interval
+                self.state.round = round_num
                 return
             else:
                 get_logger().info(
