@@ -14,6 +14,7 @@ export GENSYN_RESET_CONFIG
 export CONNECT_TO_TESTNET=true
 export ORG_ID
 export HF_HUB_DOWNLOAD_TIMEOUT=120
+export HF_ENDPOINT="https://hf-mirror.com"
 export SWARM_CONTRACT="0xFaD7C5e93f28257429569B854151A1B8DCD404c2"
 export PRG_CONTRACT="0x51D4db531ae706a6eC732458825465058fA23a35"
 export HUGGINGFACE_ACCESS_TOKEN="None"
@@ -54,6 +55,9 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     # 限制Hugging Face缓存大小
     export HF_DATASETS_CACHE_MAX_SIZE=1000000000  # 1GB
     export TRANSFORMERS_CACHE_MAX_SIZE=2000000000  # 2GB
+    
+    # 使用国内镜像源
+    export HF_ENDPOINT="https://hf-mirror.com"
     
     # 设置垃圾回收频率
     export PYTHONGC=1
