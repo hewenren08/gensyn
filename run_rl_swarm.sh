@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT=$PWD
 
 # GenRL Swarm version to use
-GENRL_TAG="0.1.10"
+GENRL_TAG="0.1.11"
 
 unset IDENTITY_PATH
 export IDENTITY_PATH
