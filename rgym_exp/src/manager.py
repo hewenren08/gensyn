@@ -270,9 +270,9 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         try:  # 添加异常处理
             if self.prg_game:
                 prg_history_dict = self.prg_module.prg_history_dict
-                # Disable play_prg_game_logits to prevent HF-related errors
-                # results_dict = self.trainer.play_prg_game_logits(prg_history_dict)
-                # self.prg_module.play_prg_game(results_dict, self.peer_id)
+                # 启用 play_prg_game_logits 以支持 judge 功能
+                results_dict = self.trainer.play_prg_game_logits(prg_history_dict)
+                self.prg_module.play_prg_game(results_dict, self.peer_id)
         except Exception as e:  # 添加异常处理
             get_logger().info(f"Error playing PRG game, continuing with the next round")
 
