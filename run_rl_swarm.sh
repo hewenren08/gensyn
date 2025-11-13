@@ -152,16 +152,6 @@ if [ "$CONNECT_TO_TESTNET" = true ]; then
     echo "Started server process: $SERVER_PID"
     sleep 5
 
-    # Try to open the URL in the default browser
-    if [ -z "$DOCKER" ]; then
-        if open http://localhost:3000 2> /dev/null; then
-            echo_green ">> Successfully opened http://localhost:3000 in your default browser."
-        else
-            echo ">> Failed to open http://localhost:3000. Please open it manually."
-        fi
-    else
-        echo_green ">> Please open http://localhost:3000 in your host browser."
-    fi
 
     cd ..
 
@@ -246,43 +236,153 @@ fi
 
 echo_green ">> Done!"
 
-
-echo -en $GREEN_TEXT
-read -p ">> Would you like to push models you train in the RL swarm to the Hugging Face Hub? [y/N] " yn
-echo -en $RESET_TEXT
-yn=${yn:-N} # Default to "N" if the user presses Enter
-case $yn in
-    [Yy]*) read -p "Enter your Hugging Face access token: " HUGGINGFACE_ACCESS_TOKEN ;;
-    [Nn]*) HUGGINGFACE_ACCESS_TOKEN="None" ;;
-    *) echo ">>> No answer was given, so NO models will be pushed to Hugging Face Hub" && HUGGINGFACE_ACCESS_TOKEN="None" ;;
-esac
-
-
-echo -en $GREEN_TEXT
-read -p ">> Enter the name of the model you want to use in huggingface repo/name format, or press [Enter] to use the default model. " MODEL_NAME
-echo -en $RESET_TEXT
-
-# Only export MODEL_NAME if user provided a non-empty value
-if [ -n "$MODEL_NAME" ]; then
-    export MODEL_NAME
-    echo_green ">> Using model: $MODEL_NAME"
-else
-    echo_green ">> Using default model from config"
-fi
-#logout to prevent weird env issues, if it fails unset and try again
-if ! hf auth logout > /dev/null 2>&1; then
-    unset HF_TOKEN
-    unset HUGGING_FACE_HUB_TOKEN
-    # if it fails a second time, report stderr
-    hf auth logout > /dev/null 2>&1
-fi
+# Set default values without interactive prompts
+HUGGINGFACE_ACCESS_TOKEN="None"
+echo_green ">> Using default Hugging Face settings (no model push)"
+echo_green ">> Using default model from config"
 
 echo -en $RESET_TEXT
 echo_green ">> Good luck in the swarm!"
 echo_blue ">> And remember to star the repo on GitHub! --> https://github.com/gensyn-ai/rl-swarm"
 
-python -m code_gen_exp.runner.swarm_launcher \
-    --config-path "$ROOT/code_gen_exp/config" \
-    --config-name "code-gen-swarm.yaml" 
+# Function to clean up before retry
+cleanup_for_retry() {
+    echo_green ">> Cleaning up before retry..."
+    
+    # Clear any lingering python processes
+    pkill -f "code_gen_exp.runner.swarm_launcher" 2>/dev/null || true
+    pkill -f "python.*code_gen_exp" 2>/dev/null || true
+    
+    # Check modal-login server status
+    if [ "$CONNECT_TO_TESTNET" = true ]; then
+        if lsof -i :3000 >/dev/null 2>&1; then
+            echo_green ">> Modal-login server is running on port 3000"
+        else
+            echo_red ">> Modal-login server is not running. Restarting..."
+            
+            # Kill any lingering yarn/node processes
+            pkill -f "modal-login" 2>/dev/null || true
+            pkill -f "yarn.*start" 2>/dev/null || true
+            sleep 2
+            
+            cd modal-login
+            yarn start >> "$ROOT/logs/yarn.log" 2>&1 &
+            SERVER_PID=$!
+            echo ">> Restarted modal-login server with PID: $SERVER_PID"
+            cd ..
+        fi
+    fi
+    
+    # Clear any lock files or temporary files
+    rm -f "$ROOT"/*.lock 2>/dev/null || true
+    rm -f "$ROOT"/logs/*.lock 2>/dev/null || true
+    
+    # Clear old training log files (keep the most recent 5)
+    if [ -d "$ROOT/logs" ]; then
+        find "$ROOT/logs" -name "training_*.log" -type f | sort -r | tail -n +6 | xargs rm -f 2>/dev/null || true
+    fi
+    
+    # Wait a bit for system resources to be released
+    sleep 2
+}
 
-wait  # Keep script running until Ctrl+C
+# Function to start training
+start_training() {
+    echo_green ">> Starting RL Swarm training..."
+    
+    # Create training log file
+    local training_log="$ROOT/logs/training_$(date +%Y%m%d_%H%M%S).log"
+    
+    # Start training process in background and get PID
+    python -m code_gen_exp.runner.swarm_launcher \
+        --config-path "$ROOT/code_gen_exp/config" \
+        --config-name "code-gen-swarm.yaml" > "$training_log" 2>&1 &
+    
+    local training_pid=$!
+    echo_blue ">> Training process started with PID: $training_pid"
+    echo_blue ">> Training log: $training_log"
+    
+    # Start log display in real-time
+    tail -f "$training_log" &
+    local tail_pid=$!
+    
+    # Wait for training process to complete
+    wait $training_pid
+    local exit_code=$?
+    
+    # Stop log display
+    kill $tail_pid 2>/dev/null || true
+    
+    echo_blue ">> Training process completed with exit code: $exit_code"
+    
+    # Check training log for DHT connection errors or other serious errors
+    if [ -f "$training_log" ]; then
+        # Check for typical error patterns
+        if grep -q "TypeError: cannot unpack non-iterable NoneType object" "$training_log" 2>/dev/null; then
+            echo_red ">> Detected DHT connection error in training logs"
+            echo_red ">> Error details saved to: $training_log"
+            return 1  # Force return error code
+        fi
+        
+        if grep -q "Exception occurred during game run" "$training_log" 2>/dev/null; then
+            echo_red ">> Detected game runtime exception in training logs"
+            echo_red ">> Error details saved to: $training_log"
+            return 1  # Force return error code
+        fi
+        
+        # Check for other common error patterns
+        if grep -q "Traceback (most recent call last)" "$training_log" 2>/dev/null; then
+            echo_red ">> Detected Python exception in training logs"
+            echo_red ">> Error details saved to: $training_log"
+            return 1  # Force return error code
+        fi
+    fi
+    
+    return $exit_code
+}
+
+# Training function with retry logic
+run_training_with_retry() {
+    local MAX_RETRIES=60
+    local RETRY_DELAY=30
+    
+    for attempt in $(seq 1 $MAX_RETRIES); do
+        echo_green ">> Training attempt $attempt/$MAX_RETRIES"
+        
+        set +e  # Manually capture exit code to avoid premature exit due to -e
+        start_training
+        exit_code=$?
+        set -e
+        
+        if [ $exit_code -eq 0 ]; then
+            echo_green ">> Training completed successfully!"
+            cleanup
+            exit 0
+        elif [ $exit_code -eq 137 ]; then
+            echo_red ">> Training attempt $attempt was killed by system (SIGKILL)"
+            echo_red ">> This usually indicates memory issues or system resource constraints"
+        elif [ $exit_code -eq 143 ]; then
+            echo_red ">> Training attempt $attempt was terminated (SIGTERM or timeout)"
+            echo_red ">> This may indicate the process was stuck or killed due to inactivity"
+         elif [ $exit_code -eq 1 ]; then
+            # DHT connection failure or other runtime error
+            echo_red ">> Training attempt $attempt failed with DHT/runtime error (exit code 1)"
+            echo_red ">> This usually indicates network connectivity or DHT synchronization issues"
+        else
+            echo_red ">> Training attempt $attempt failed with exit code $exit_code"
+        fi
+        
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            cleanup_for_retry
+            echo_green ">> Waiting ${RETRY_DELAY}s before retry..."
+            sleep $RETRY_DELAY
+        else
+            echo_red ">> All $MAX_RETRIES attempts failed. Final exit code: $exit_code"
+            cleanup
+            exit 1
+        fi
+    done
+}
+
+# Now start the retry logic
+run_training_with_retry
