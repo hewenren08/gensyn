@@ -219,13 +219,6 @@ echo_green ">> Installing GenRL..."
 # 解决依赖冲突问题：确保 huggingface-hub 版本与 transformers 兼容
 pip install "huggingface-hub>=0.34.0,<1.0.0"
 
-# 尝试修复 HuggingFace 连接问题
-echo_green ">> Fixing HuggingFace connectivity..."
-if [ -f "fix_hf_connectivity.sh" ]; then
-    ./fix_hf_connectivity.sh
-else
-    echo "警告: fix_hf_connectivity.sh 脚本未找到，跳过网络修复"
-fi
 
 # Ollama already running as part of the docker compose file
 if [ -z "$DOCKER" ]; then
