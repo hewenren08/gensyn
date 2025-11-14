@@ -13,6 +13,7 @@ export HF_HUB_DOWNLOAD_TIMEOUT=120  # 2 minutes
 export SWARM_CONTRACT="0x7745a8FE4b8D2D2c3BB103F8dCae822746F35Da0"
 export HUGGINGFACE_ACCESS_TOKEN="None"
 export HF_ENDPOINT="https://hf-mirror.com"  # 使用国内镜像
+export HF_HUB_ENABLE_HF_TRANSFER="1"  # 启用hf-transfer加速下载
 export TRANSFORMERS_CACHE="./model_cache"  # 本地模型缓存目录
 
 # Path to an RSA private key. If this path does not exist, a new key pair will be created.
@@ -80,6 +81,17 @@ cleanup() {
     # Kill modal-login/yarn processes
     pkill -f "modal-login" 2>/dev/null || true
     pkill -f "yarn.*start" 2>/dev/null || true
+    pkill -f "next-server" 2>/dev/null || true
+    pkill -f "node.*3000" 2>/dev/null || true
+    
+    # Force kill processes on port 3000
+    PORT_3000_PID=$(lsof -ti:3000 2>/dev/null)
+    if [ -n "$PORT_3000_PID" ]; then
+        kill $PORT_3000_PID 2>/dev/null || true
+        sleep 1
+        # If still running, force kill
+        kill -9 $PORT_3000_PID 2>/dev/null || true
+    fi
     
     # Kill all processes belonging to this script's process group
     kill -- -$$ 2>/dev/null || true
@@ -89,6 +101,8 @@ cleanup() {
     pkill -9 -f "python.*code_gen_exp" 2>/dev/null || true
     pkill -9 -f "swarm_launcher" 2>/dev/null || true
     pkill -9 -f "tail -f.*training_" 2>/dev/null || true
+    pkill -9 -f "next-server" 2>/dev/null || true
+    pkill -9 -f "node.*3000" 2>/dev/null || true
 
     exit 0
 }
@@ -204,6 +218,14 @@ pip install --upgrade pip
 echo_green ">> Installing GenRL..."
 # 解决依赖冲突问题：确保 huggingface-hub 版本与 transformers 兼容
 pip install "huggingface-hub>=0.34.0,<1.0.0"
+
+# 尝试修复 HuggingFace 连接问题
+echo_green ">> Fixing HuggingFace connectivity..."
+if [ -f "fix_hf_connectivity.sh" ]; then
+    ./fix_hf_connectivity.sh
+else
+    echo "警告: fix_hf_connectivity.sh 脚本未找到，跳过网络修复"
+fi
 
 # Ollama already running as part of the docker compose file
 if [ -z "$DOCKER" ]; then
