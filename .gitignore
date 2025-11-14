@@ -12,6 +12,7 @@ runs/
 model_output_samples/
 grpo_trainer_lora_model/
 unsloth_compiled_cache/
+model_cache/
 
 node_modules/
 web/ui/dist/

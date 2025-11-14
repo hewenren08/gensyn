@@ -12,6 +12,8 @@ export ORG_ID
 export HF_HUB_DOWNLOAD_TIMEOUT=120  # 2 minutes
 export SWARM_CONTRACT="0x7745a8FE4b8D2D2c3BB103F8dCae822746F35Da0"
 export HUGGINGFACE_ACCESS_TOKEN="None"
+export HF_ENDPOINT="https://hf-mirror.com"  # 使用国内镜像
+export TRANSFORMERS_CACHE="./model_cache"  # 本地模型缓存目录
 
 # Path to an RSA private key. If this path does not exist, a new key pair will be created.
 # Remove this file if you want a new PeerID.
@@ -67,8 +69,26 @@ cleanup() {
     # Remove modal credentials if they exist
     rm -r $ROOT_DIR/modal-login/temp-data/*.json 2> /dev/null || true
 
+    # Kill Python training processes specifically
+    pkill -f "python -m code_gen_exp.runner.swarm_launcher" 2>/dev/null || true
+    pkill -f "python.*code_gen_exp" 2>/dev/null || true
+    pkill -f "swarm_launcher" 2>/dev/null || true
+    
+    # Kill any tail processes that might be watching logs
+    pkill -f "tail -f.*training_" 2>/dev/null || true
+    
+    # Kill modal-login/yarn processes
+    pkill -f "modal-login" 2>/dev/null || true
+    pkill -f "yarn.*start" 2>/dev/null || true
+    
     # Kill all processes belonging to this script's process group
-    kill -- -$$ || true
+    kill -- -$$ 2>/dev/null || true
+    
+    # Force kill if graceful shutdown doesn't work
+    sleep 2
+    pkill -9 -f "python.*code_gen_exp" 2>/dev/null || true
+    pkill -9 -f "swarm_launcher" 2>/dev/null || true
+    pkill -9 -f "tail -f.*training_" 2>/dev/null || true
 
     exit 0
 }
@@ -182,6 +202,8 @@ echo_green ">> Getting requirements..."
 pip install --upgrade pip
 
 echo_green ">> Installing GenRL..."
+# 解决依赖冲突问题：确保 huggingface-hub 版本与 transformers 兼容
+pip install "huggingface-hub>=0.34.0,<1.0.0"
 
 # Ollama already running as part of the docker compose file
 if [ -z "$DOCKER" ]; then
