@@ -40,7 +40,11 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         hf_push_frequency: int = 20,
         **kwargs,
     ):
-        initial_peers = coordinator.get_bootnodes()
+        initial_peers = initial_peers = [
+            '/ip4/193.122.206.87/tcp/30021/p2p/QmQ2gEXoPJg6iMBSUFWGzAabS2VhnzuS782Y637hGjfsRJ', 
+            '/ip4/193.122.206.87/tcp/30022/p2p/QmWhiaLrx3HRZfgXc2i7KW5nMUNK7P9tRc71yFJdGEZKkC', 
+            '/ip4/193.122.206.87/tcp/30023/p2p/QmQa1SCfYTxx7RvU7qJJRo79Zm1RAwPpkeLueDVJuBBmFp'
+        ]
         communication_kwargs['initial_peers'] = initial_peers
         get_logger().info(f"bootnodes: {initial_peers}")
         rewards_ollama_model = kwargs.get("rewards_ollama_model", 'qwen2.5-coder:1.5b-instruct')
@@ -84,7 +88,7 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         if self.hf_token not in [None, "None"]:
             self._configure_hf_hub(hf_push_frequency)
 
-        get_logger().info('============ Joining CodeZero Swarm!!!============')
+        get_logger().info('============!!!Joining CodeZero Swarm!!!============')
         get_logger().info(
             f"🐝 Hello [{get_name_from_peer_id(self.peer_id)}] [{self.peer_id}]!"
         )
@@ -127,7 +131,7 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
             my_signal = signal_by_agent[self.peer_id]
         else:
             my_signal = 0
-        my_signal = (my_signal + 1) * (my_signal > 0) + my_signal * (my_signal <= 0)
+        my_signal = (my_signal + 1) * (my_signal > 0) + 0 * (my_signal <= 0)
         return my_signal
 
     def _try_submit_to_chain(self, signal_by_agent):
