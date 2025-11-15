@@ -40,11 +40,7 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         hf_push_frequency: int = 20,
         **kwargs,
     ):
-        initial_peers = initial_peers = [
-            '/ip4/193.122.206.87/tcp/30021/p2p/QmQ2gEXoPJg6iMBSUFWGzAabS2VhnzuS782Y637hGjfsRJ', 
-            '/ip4/193.122.206.87/tcp/30022/p2p/QmWhiaLrx3HRZfgXc2i7KW5nMUNK7P9tRc71yFJdGEZKkC', 
-            '/ip4/193.122.206.87/tcp/30023/p2p/QmQa1SCfYTxx7RvU7qJJRo79Zm1RAwPpkeLueDVJuBBmFp'
-        ]
+        initial_peers = coordinator.get_bootnodes()
         communication_kwargs['initial_peers'] = initial_peers
         get_logger().info(f"bootnodes: {initial_peers}")
         rewards_ollama_model = kwargs.get("rewards_ollama_model", 'qwen2.5-coder:1.5b-instruct')
