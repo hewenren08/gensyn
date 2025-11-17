@@ -42,9 +42,9 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
     ):
         # initial_peers = coordinator.get_bootnodes()
         initial_peers = [
-            '/ip4/38.101.215.15/tcp/30021/p2p/QmQ2gEXoPJg6iMBSUFWGzAabS2VhnzuS782Y637hGjfsRJ', 
-            '/ip4/38.101.215.15/tcp/30022/p2p/QmWhiaLrx3HRZfgXc2i7KW5nMUNK7P9tRc71yFJdGEZKkC', 
-            '/ip4/38.101.215.15/tcp/30023/p2p/QmQa1SCfYTxx7RvU7qJJRo79Zm1RAwPpkeLueDVJuBBmFp'
+            '/ip4/13.211.128.59/tcp/30021/p2p/QmQ2gEXoPJg6iMBSUFWGzAabS2VhnzuS782Y637hGjfsRJ', 
+            '/ip4/13.211.128.59/tcp/30022/p2p/QmWhiaLrx3HRZfgXc2i7KW5nMUNK7P9tRc71yFJdGEZKkC', 
+            '/ip4/13.211.128.59/tcp/30023/p2p/QmQa1SCfYTxx7RvU7qJJRo79Zm1RAwPpkeLueDVJuBBmFp'
         ]
         communication_kwargs['initial_peers'] = initial_peers
         get_logger().info(f"bootnodes: {initial_peers}")
